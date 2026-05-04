@@ -3,6 +3,7 @@ import { StockItemsApi } from './stock-items.api';
 import { StockItemModel } from '../../models';
 import { get } from 'superagent';
 import { ConfigService } from '@nestjs/config';
+import CircuitBreaker from 'opossum';
 
 class StockItem {
     'id'?: string;
@@ -15,19 +16,31 @@ class StockItem {
 
 @Injectable()
 export class StockItemsService implements StockItemsApi {
+    private breaker: CircuitBreaker;
+
     constructor(private configService: ConfigService) { }
 
     async listStockItems(): Promise<StockItemModel[]> {
         const serviceUrl = this.configService.get<string>('SERVICE_URL');
+
+        const fetchStockItems = async () => {
+            const res = await get(`${serviceUrl}/stock-items`)
+                .set('Accept', 'application/json');
+            return res.body;
+        };
+
+        if (!this.breaker) {
+            this.breaker = new CircuitBreaker(fetchStockItems, {
+                timeout: 3000,
+                errorThresholdPercentage: 50,
+                resetTimeout: 30000,
+            });
+        }
+
         return new Promise((resolve, reject) => {
-            get(`${serviceUrl}/stock-items`)
-                .set('Accept', 'application/json')
-                .then(res => {
-                    resolve(this.mapStockItems(res.body));
-                })
-                .catch(err => {
-                    reject(err);
-                });
+            this.breaker.fire()
+                .then(data => resolve(this.mapStockItems(data)))
+                .catch(err => reject(err));
         });
     }
 
